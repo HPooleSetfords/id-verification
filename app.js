@@ -75,9 +75,11 @@
     });
     return ['Client', 'Party'].filter((x) => r.has(x));
   }
-  /* Estate agents don't need an ID check: a person whose only role on any matter is
-     Estate Agent shows no VOI statuses and can't be invited. */
+  /* Estate-agent exemption retracted 2026-11-20 (Harry): estate agents show statuses
+     and can be invited like anyone else. Switch ESTATE_AGENT_EXEMPT on to restore it. */
+  const ESTATE_AGENT_EXEMPT = false;
   function noVoi(key) {
+    if (!ESTATE_AGENT_EXEMPT) return false;
     const c = C(key);
     if (!isPerson(c) || rolesOf(key).includes('Client')) return false;
     const rels = [];

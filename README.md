@@ -41,7 +41,7 @@ Open `index.html` in Chrome or Edge. No build step and no server needed. It need
 Changes (invites, favourites, open tabs) are saved in the browser. Open `index.html#/reset` to put everything back to the starting data.
 
 ## Choices made that aren't in the Figma
-- Estate agents don't need an ID check. A person whose only role is Estate Agent shows — in every status column (matter tabs and Directory), is left out of the invite dialog, and can't be selected for an invite.
+- Estate agents are treated like any other person: they show ID statuses and can be invited. (An exemption that hid them was tried and retracted on 20 Nov 2026; it can be switched back on with `ESTATE_AGENT_EXEMPT` in app.js.)
 - The Clients and Parties tabs don't show counts, and Add Party is disabled.
 - Directory filters are single-choice dropdowns with an Any option. Applied filters show as chips under the toolbar. Choosing a status hides companies, which have no ID checks.
 - The 24520 Client Matters side panel is left out of the Matters pages (removed at Harry's request).
