@@ -4,7 +4,8 @@
    from one place shows everywhere. All names, numbers and addresses are invented
    placeholder data taken from the Figma frames. */
 
-window.TODAY = '19 Nov 2026';
+window.TODAY = '25 Nov 2026';
+window.ME = 'Harry Poole';
 
 /* status keys: notchecked | invited | progress | review | failed | verified | expired */
 window.STATUS = {
@@ -25,7 +26,7 @@ const S = (id, addr, aml, date) => ({ id, addr: addr || id, aml: aml || (id === 
 
 window.SEED_CONTACTS = [
   /* ---- A204/3: Ms Jenifer Moir Allen (21082 matter flow + parties tab) ---- */
-  P({ key: 'jma', ref: 'A204', title: 'Ms', first: 'Jenifer', middle: 'Moir', last: 'Allen', phone: '07700 897802', email: 'JMAllen@outlook.com', address: '17 Wickham Avenue, Ramsgate CT11 8RX', status: S('notchecked') }),
+  P({ key: 'jma', ref: 'A204', title: 'Ms', first: 'Jenifer', middle: 'Moir', last: 'Allen', dob: '22/06/1984', phone: '07700 897802', email: 'JMAllen@outlook.com', address: '17 Wickham Avenue, Ramsgate CT11 8RX', status: S('review', 'review', 'review', '21 Nov 2026') }),
   C({ key: 'callards', ref: 'C40112', company: 'Callards Worplesdon Office', phone: '01483 456111', email: 'worplesdon@callards.net', address: '12b Worplesdon Road, Guildford GU3 3RE' }),
   P({ key: 'sarah', ref: 'C40113', title: 'Mrs', first: 'Sarah', last: 'Callard', companyId: 'callards', phone: '07700 900561', email: 's.callard@callards.co.uk', address: '12b Worplesdon Road, Guildford GU3 3RJ', status: S('verified', 'verified', 'verified', '2 Feb 2026') }),
   C({ key: 'wright', ref: 'W30218', company: 'Wright and Wright', phone: '01483 531264', email: '', address: 'DX 83153 Guildford 2' }),
@@ -51,7 +52,7 @@ window.SEED_CONTACTS = [
   /* ---- P3311/1: four clients ---- */
   P({ key: 'anita', ref: 'P3311', title: 'Mrs', first: 'Anita', last: 'Patel', phone: '07700 900123', email: 'anita.patel@example.com', address: '17 Wickham Avenue, Ramsgate CT11 8RX', status: S('progress', 'progress', 'progress', '15 Nov 2026') }),
   P({ key: 'raj', ref: 'P3312', title: 'Mr', first: 'Raj', last: 'Patel', phone: '07700 900124', email: 'raj.patel@example.com', address: '17 Wickham Avenue, Ramsgate CT11 8RX', status: S('verified', 'verified', 'verified', '15 Nov 2026') }),
-  P({ key: 'grace', ref: 'O3313', title: 'Mrs', first: 'Grace', last: 'Okafor', phone: '07700 900125', email: 'grace.okafor@example.com', address: '9 Station Road, Woking GU22 7AA', status: S('failed', 'failed', 'review', '16 Nov 2026') }),
+  P({ key: 'grace', ref: 'O3313', title: 'Mrs', first: 'Grace', last: 'Okafor', phone: '07700 900125', email: 'grace.okafor@example.com', address: '9 Station Road, Woking GU22 7AA', status: S('review', 'review', 'review', '22 Nov 2026') }),
   C({ key: 'marlowest', ref: 'T12025', company: 'Marlow Estates Ltd', roles: ['Client'], phone: '01628 555740', email: 'office@marlow.example.com', address: '2 High Street, Marlow SL7 1AX' }),
   P({ key: 'oliver', ref: 'M30871', title: 'Mr', first: 'Oliver', last: 'Marlow', companyId: 'marlowest', phone: '07700 900120', email: 'o.marlow@marlow.example.com', address: '2 High Street, Marlow SL7 1AX', status: S('expired', 'expired', 'expired', '30 Jun 2024') }),
   P({ key: 'chloe', ref: 'P51903', title: 'Ms', first: 'Chloe', last: 'Patel', phone: '07700 900122', email: 'c.patel@example.com', address: '11 Kings Road, Ramsgate CT11 7QL', status: S('invited', 'invited', 'invited', '18 Nov 2026') }),
@@ -147,3 +148,20 @@ window.SEED_MATTERS = [
 window.SEED_FAVOURITES = ['A204-3', 'C14350-1', 'A25-1'];
 window.SEED_RECENTS = ['A204-3', 'C14350-1', 'P3311-1', 'A902-4', 'S25995-2', 'A204-4', '110-1', 'A25-1'];
 window.SEED_OPEN_TABS = ['A204-3', 'C14350-1'];
+
+/* ID check reviews (36685 Manual Review Process). One per person who has submitted
+   documents. issues lists what Halo flagged in each area; an empty list shows Clear.
+   decision is filled in once someone approves or rejects. People without an entry get
+   a generated record from their status (verified = approved, failed = rejected). */
+window.SEED_REVIEWS = {
+  jma:     { submitted: '21 Nov 2026, 09:42', issues: { id: [], addr: [], aml: [] } },
+  grace:   { submitted: '22 Nov 2026, 14:05', issues: { id: ['Visual Authenticity: Digital Tampering', 'Data Comparison: Last Name'], addr: ['Document Classification: Valid Document Date'], aml: [] } },
+  pwdir:   { submitted: '15 Nov 2026, 11:20', issues: { id: ['Visual Authenticity: Digital Tampering'], addr: [], aml: [] } },
+  sophie:  { submitted: '13 Nov 2026, 16:48', issues: { id: [], addr: ['Document Classification: Valid Document Date'], aml: [] } },
+  robert:  { submitted: '10 Oct 2026, 10:12', issues: { id: ['Visual Authenticity: Digital Tampering', 'Data Comparison: Last Name'], addr: [], aml: [] },
+             decision: { outcome: 'rejected', by: 'Stuart Lee', at: '11 Oct 2026, 15:30', notes: "The passport photo page looks edited and the surname doesn't match the one we hold. I've asked Robert to come into the office with his passport so we can verify him in person." } },
+  poduval: { submitted: '12 Nov 2026, 08:55', issues: { id: ['Data Comparison: Date of Birth'], addr: ['Document Classification: Valid Document Date'], aml: [] },
+             decision: { outcome: 'rejected', by: 'Stuart Lee', at: '13 Nov 2026, 09:40', notes: 'The date of birth on the passport is different to the one on file, and the proof of address is more than 3 months old. Asked the client to send something more up to date.' } },
+  raj:     { submitted: '14 Nov 2026, 19:02', issues: { id: ['Visual Authenticity: Glare'], addr: [], aml: [] },
+             decision: { outcome: 'approved', by: 'Stuart Lee', at: '15 Nov 2026, 09:12', notes: 'The glare covers part of the photo page but the details are readable and match the client record.' } },
+};

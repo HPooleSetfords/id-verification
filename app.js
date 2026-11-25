@@ -9,13 +9,13 @@
   'use strict';
 
   /* ------------------------------------------------------------------ store */
-  const KEY = 'halo-voi-prototype-v2';
+  const KEY = 'halo-voi-prototype-v3';
   const clone = (o) => JSON.parse(JSON.stringify(o));
 
   function seed() {
     const contacts = {};
     SEED_CONTACTS.forEach((c) => { contacts[c.key] = clone(c); });
-    return { contacts, matters: clone(SEED_MATTERS), seq: 1, favs: SEED_FAVOURITES.slice(), recents: SEED_RECENTS.slice(), tabs: SEED_OPEN_TABS.slice(), subTabs: {} };
+    return { contacts, matters: clone(SEED_MATTERS), reviews: clone(SEED_REVIEWS), seq: 1, favs: SEED_FAVOURITES.slice(), recents: SEED_RECENTS.slice(), tabs: SEED_OPEN_TABS.slice(), subTabs: {} };
   }
   function load() {
     try { const raw = localStorage.getItem(KEY); return raw ? JSON.parse(raw) : null; } catch (e) { return null; }
@@ -26,6 +26,7 @@
 
   const stored = load();
   let db = stored && stored.db ? stored.db : seed();
+  if (!db.reviews) db.reviews = {};
   const ui = {
     failNext: false,
     dir: { filter: 'all', q: '', page: 1, sel: new Set(), adv: { type: '', id: '', addr: '', aml: '' } },
@@ -40,6 +41,9 @@
     snack: null,
     toast: null,
     flash: new Set(),
+    /* people pages: selected person per list, open detail sections, collapsed right-hand cards */
+    pp: { sel: {}, secs: new Set(), cards: new Set(['matters', 'bills']) },
+    review: null, /* ID verification side panel */
   };
 
   /* ---------------------------------------------------------------- helpers */
@@ -48,6 +52,9 @@
   const C = (k) => db.contacts[k];
   const isPerson = (c) => c && c.type === 'Person';
   const matterById = (id) => db.matters.find((m) => m.id === id);
+  /* currency (Settings › Preferences). Amounts are prototype figures: only the symbol changes, no conversion. */
+  const CURRENCIES = { GBP: { sym: '£', label: 'Pound sterling', code: 'GBP' }, USD: { sym: '$', label: 'US dollar', code: 'USD' } };
+  const cur = () => CURRENCIES[db.currency || 'GBP'].sym;
 
   function fullName(c) {
     if (!c) return '';
@@ -142,8 +149,10 @@
     const parts = path.split('/');
     const params = new URLSearchParams(qs || '');
     if (parts[0] === 'matter' && matterById(parts[1])) return { name: 'matter', id: parts[1], tab: parts[2] || 'summary', params };
+    if (parts[0] === 'person' && db.contacts[parts[1]]) return { name: 'person', id: parts[1], params };
     if (parts[0] === 'matters') return { name: 'matters', params };
     if (parts[0] === 'directory') return { name: 'directory', params };
+    if (parts[0] === 'settings') return { name: 'settings', params };
     return { name: 'dashboard', params };
   }
   let lastRouteKey = '';
@@ -151,7 +160,7 @@
     if (location.hash === '#/reset') { try { localStorage.removeItem(KEY); } catch (e) { /* ignore */ } db = seed(); ui.dir.sel.clear(); ui.tab.sel.clear(); ui.modal = null; location.replace('#/dashboard'); snack('Prototype data reset'); return; }
     const r = route();
     const key = r.name + (r.id || '') + (r.tab || '');
-    if (key !== lastRouteKey) { ui.tab.sel.clear(); ui.tab.q = ''; ui.menu = null; ui.popover = null; ui.flyout = null; ui.fpop = null; }
+    if (key !== lastRouteKey) { ui.tab.sel.clear(); ui.tab.q = ''; ui.menu = null; ui.popover = null; ui.flyout = null; ui.fpop = null; ui.review = null; closePip(); }
     noteMatter(r);
     if (r.name === 'directory' && r.params.get('q') != null) { ui.dir.q = r.params.get('q'); ui.dir.filter = 'all'; ui.dir.page = 1; }
     const hl = r.params.get('hl'); if (hl) flash(hl);
@@ -179,11 +188,11 @@
       <button class="icon-btn collapse" data-act="na" aria-label="Collapse menu" style="color:#fff"><span class="ms">menu_open</span></button>
       ${item('dashboard', 'Dashboard', 'nav-dashboard', r.name === 'dashboard')}
       ${item('work', 'Matters', 'nav-matters', r.name === 'matters' || r.name === 'matter')}
-      ${item('contacts', 'Directory', 'nav-directory', r.name === 'directory')}
+      ${item('contacts', 'Directory', 'nav-directory', r.name === 'directory' || r.name === 'person')}
       ${item('account_balance', 'Accounting', 'na', false, true)}
       ${item('apartment', 'Head Office', 'na', false, true)}
       ${item('bar_chart', 'Reports', 'na', false, true)}
-      ${item('settings', 'Settings', 'na', false, true)}
+      ${item('settings', 'Settings', 'nav-settings', r.name === 'settings')}
 `;
   }
 
@@ -263,6 +272,21 @@
     </div>`;
   }
 
+  function settingsHtml() {
+    const now = db.currency || 'GBP';
+    const opt = (k) => { const c = CURRENCIES[k]; return `<label class="set-opt ${now === k ? 'on' : ''}"><input type="radio" name="currency" data-act="set-currency" data-cur="${k}" ${now === k ? 'checked' : ''}><span class="set-sym">${c.sym}</span><span><b>${c.label}</b><small>${c.code} · ${c.sym}1,500.00</small></span></label>`; };
+    return `<div class="page set-page">
+      <div class="page-head"><h1>Settings</h1></div>
+      <section class="set-card">
+        <h2>Preferences</h2>
+        <div class="set-row">
+          <div class="set-label"><b>Currency</b><span>The currency used for balances, bills, quotes and the Dashboard.</span></div>
+          <div class="set-opts" role="radiogroup" aria-label="Currency">${opt('GBP')}${opt('USD')}</div>
+        </div>
+      </section>
+    </div>`;
+  }
+
   function directoryHtml() {
     const all = dirRows();
     const per = 25;
@@ -276,7 +300,7 @@
     const body = rows.map(({ c, roles }) => `
       <tr class="${ui.flash.has(c.key) ? 'flash' : ''}" data-key="${c.key}">
         <td class="chk">${cbHtml(sel.has(c.key), 'dir-sel', `data-key="${c.key}"`)}</td>
-        <td>${esc(c.ref)}</td>
+        <td class="link"><a data-act="to-person" data-key="${c.key}">${esc(c.ref)}</a></td>
         ${personCells(c)}
         <td><span class="roles">${roles.map((r) => `<span class="role">${r}</span>`).join('') || '<span class="dash">—</span>'}</span></td>
         ${contactCells(c)}
@@ -503,9 +527,9 @@
         <section class="db-card db-cash"><h2 class="db-title">Bills &amp; Payments</h2>
           <div class="db-cashbody"><div class="db-chart">
             <div class="db-legend"><span><i class="bills"></i>Bills</span><span><i class="pay"></i>Payments</span></div>
-            <div class="db-plot"><div class="db-gridlines"><div><span>£30k</span></div><div><span>£20k</span></div><div><span>£10k</span></div><div><span>£0</span></div></div><div class="db-barsrow">${bars}</div></div>
+            <div class="db-plot"><div class="db-gridlines"><div><span>${cur()}30k</span></div><div><span>${cur()}20k</span></div><div><span>${cur()}10k</span></div><div><span>${cur()}0</span></div></div><div class="db-barsrow">${bars}</div></div>
           </div>
-          <div class="db-figs"><div><span>Bills</span><b>£120,613</b></div><div><span>Payments</span><b>£78,207</b></div><div><span>Balance</span><b class="neg">-£42,594</b></div></div></div>
+          <div class="db-figs"><div><span>Bills</span><b>${cur()}120,613</b></div><div><span>Payments</span><b>${cur()}78,207</b></div><div><span>Balance</span><b class="neg">-${cur()}42,594</b></div></div></div>
         </section>
         <section class="db-card db-paf"><h2 class="db-title">PAF Deadline</h2><div class="db-pie"></div>
           <div class="db-timer"><span class="db-time" id="paf-t">${pafText()}</span><span class="db-cap">3pm weekdays</span></div></section>
@@ -633,54 +657,430 @@
     });
     return rows;
   }
-  function peopleTabHtml(m, tab) {
-    const scope = `${m.id}:${tab}`;
-    if (ui.tab.scope !== scope) { ui.tab.scope = scope; ui.tab.sel.clear(); }
-    const q = ui.tab.q.trim().toLowerCase();
-    let rows = tabRows(m, tab);
-    if (q) rows = rows.filter((r) => { const c = C(r.key); return [c.ref, fullName(c), c.company, companyOf(c) && companyOf(c).company, c.email, c.phone, r.rel].join(' ').toLowerCase().includes(q); });
-    const sel = ui.tab.sel;
-    const visSel = rows.filter((r) => sel.has(r.key)).length;
-    const headState = visSel === 0 ? false : visSel === rows.length ? true : 'mixed';
-    const noun = tab === 'parties' ? 'Parties' : 'Clients';
-    const body = rows.map(({ key, rel }) => {
-      const c = C(key);
-      return `<tr class="${ui.flash.has(key) ? 'flash' : ''}">
-        <td class="chk">${cbHtml(sel.has(key), 'tab-sel', `data-key="${key}"`)}</td>
-        <td class="link"><a data-act="to-directory" data-key="${key}" title="Open in Directory">${esc(c.ref)}</a></td>
-        ${personCells(c)}
-        <td>${esc(rel)}</td>
-        ${contactCells(c)}
-        <td>${stCell(c, 'id')}</td><td>${stCell(c, 'addr')}</td><td>${stCell(c, 'aml')}</td>
-        <td>${esc(c.address) || '<span class="dash">—</span>'}</td>
-        <td class="act-col"><button class="icon-btn" data-act="row-menu" data-scope="tab" data-key="${key}" data-id="${m.id}" aria-label="Actions"><span class="ms">more_vert</span></button></td>
-      </tr>`;
-    }).join('');
-    return `<div class="tab-body">
-      <div class="toolbar">
-        <label class="search" style="width:352px"><span class="ms">search</span><input id="tab-q" placeholder="Search ${noun}" value="${esc(ui.tab.q)}" autocomplete="off"></label>
-        <button class="tool-link" data-act="na"><span class="ms sm">view_column</span>Columns</button>
-        <button class="tool-link" data-act="na"><span class="ms sm">filter_list</span>Filters</button>
-        <span class="spacer"></span>
-        <button class="btn outline teal" data-act="na" data-id="${m.id}" ${tab === 'parties' ? 'disabled title="Adding a party isn\'t available in this prototype"' : ''}><span class="ms sm">add</span>Add ${tab === 'parties' ? 'Party' : 'Client'}</button>
-      </div>
-      ${selBarHtml([...sel], 'tab')}
-      <div class="table-wrap"><div class="table-scroll" id="tab-scroll">
-        <table class="dt"><thead><tr>
-          <th class="chk">${cbHtml(headState, 'tab-sel-all', `data-id="${m.id}" data-tab="${tab}"`)}</th>
-          <th>Reference</th><th>Type</th><th>Title</th><th>Name</th><th>Surname</th><th>Company</th><th>Relationship</th><th>Phone No.</th><th>Email Address</th><th>ID Verified</th><th>Address Verified</th><th>AML Check</th><th>Address</th><th class="act-col">Action</th>
-        </tr></thead><tbody>${body}</tbody></table>
-        ${rows.length ? '' : `<div class="empty">No ${noun.toLowerCase()} match your search.</div>`}
-      </div></div>
+  /* ================================================================ people pages (21081 / 36685)
+     One layout for the matter Clients tab, the matter Parties tab and a person's own page
+     (opened from the Directory): a list of people on the left (the selected one opens to show
+     their details), and on the right an ID banner, then Documents, Related Matters and (for
+     clients) Recent Bills. Figma: 8564:704630 clients, 8607:763765 parties, 8607:799008 person. */
+  function createdDate(c) {
+    let h = 0; for (const ch of c.ref) h = (h * 31 + ch.charCodeAt(0)) % 100000;
+    const d = 1 + (h % 28), mo = 1 + (Math.floor(h / 28) % 12), y = 2018 + (h % 8);
+    return `${String(d).padStart(2, '0')}/${String(mo).padStart(2, '0')}/${y}`;
+  }
+  const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  /* '21 Nov 2026' (or '21 Nov 2026, 09:42') -> '21/11/2026' */
+  function dmy(s) {
+    const m = /^(\d{1,2}) (\w{3}) (\d{4})/.exec(s || '');
+    if (!m) return s || '';
+    return `${m[1].padStart(2, '0')}/${String(MONTHS.indexOf(m[2]) + 1).padStart(2, '0')}/${m[3]}`;
+  }
+  function nowStamp() {
+    const d = new Date();
+    return `${TODAY}, ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  }
+  const possessive = (c) => { const n = isPerson(c) ? c.first.split(' ')[0] : c.company; return /s$/i.test(n) ? `${n}’` : `${n}’s`; };
+
+  /* ---- review record: seeded, or generated from the person's status ---- */
+  function reviewOf(key) {
+    const c = C(key);
+    if (!isPerson(c)) return null;
+    if (db.reviews[key]) return db.reviews[key];
+    const k = c.status.id;
+    if (!['review', 'verified', 'failed', 'expired'].includes(k)) return null;
+    const at = c.status.date ? `${c.status.date}, 10:30` : '';
+    const iss = { id: [], addr: [], aml: [] };
+    if (k === 'failed') {
+      if (c.status.addr === 'failed') iss.addr.push('Document Classification: Valid Document Date');
+      if (c.status.aml === 'failed' || c.status.aml === 'review') iss.aml.push('Sanctions Screening: Possible Match');
+      if (!iss.addr.length && !iss.aml.length) iss.id.push('Visual Authenticity: Digital Tampering');
+    }
+    return {
+      submitted: at, issues: iss, generated: true,
+      decision: k === 'verified' || k === 'expired' ? { outcome: 'approved', by: 'Stuart Lee', at, notes: '' }
+        : k === 'failed' ? { outcome: 'rejected', by: 'Stuart Lee', at, notes: 'The documents didn’t pass the checks. The client has been asked to verify again.' } : null,
+    };
+  }
+  const issueCount = (rv) => rv.issues.id.length + rv.issues.addr.length + rv.issues.aml.length;
+
+  /* ---- documents, bills and related matters (prototype data) ---- */
+  function idDocs(c) {
+    const k = c.status.id;
+    const rv = reviewOf(c.key);
+    const on = rv ? dmy(rv.submitted) : dmy(c.status.date);
+    const docs = [];
+    if (['review', 'verified', 'failed', 'expired'].includes(k)) {
+      docs.push({ name: `Setfords App check report IDM-${c.ref.replace(/\D/g, '').slice(0, 4).padEnd(4, '0')}-4471.pdf`, on, by: 'Setfords App' });
+      docs.push({ name: 'Passport – photo page.jpg', on, by: 'Setfords App' });
+      docs.push({ name: 'Council tax bill 2026.pdf', on, by: 'Setfords App' });
+    } else if (k === 'progress') {
+      docs.push({ name: 'Passport – photo page.jpg', on, by: 'Setfords App' });
+    }
+    return docs;
+  }
+  function docsFor(key, asClient) {
+    const c = C(key);
+    const docs = isPerson(c) ? idDocs(c) : [];
+    if (asClient) {
+      const ms = mattersOf(key).filter((x) => x.tab === 'clients');
+      if (ms.length) docs.push({ name: `Client care letter – ${ms[0].m.ref}.pdf`, on: ms[0].m.opened, by: ms[0].m.feeEarner });
+    }
+    return docs;
+  }
+  const BILLS = [['1131402', '24/07/2026', 12.00], ['1053480', '20/02/2026', 1212.00], ['1053479', '20/02/2026', 1179.60], ['1051256', '17/02/2026', 7.45]];
+  const money = (n) => `${cur()}${n.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  function relatedMatters(key) {
+    const seen = new Set(), out = [];
+    mattersOf(key).forEach((x) => { if (!seen.has(x.m.id)) { seen.add(x.m.id); out.push(x); } });
+    return out;
+  }
+
+  /* ---- the list on the left ---- */
+  function ppKey(scope) { return ui.pp.sel[scope]; }
+  function statusIcon(c) {
+    if (!isPerson(c)) return '';
+    const s = STATUS[c.status.id];
+    return `<span class="pp-ic st ${s.tone}" title="${esc(s.line)}">${SVG[s.icon]}</span>`;
+  }
+  const NS = '<span class="ns">Not specified</span>';
+  const ppRow = (label, val) => `<div class="pp-row"><span>${label}</span>${val ? `<b>${esc(val)}</b>` : NS}</div>`;
+  function ppSection(id, icon, title, rows) {
+    const open = ui.pp.secs.has(id);
+    return `<div class="pp-sec ${open ? 'open' : ''}">
+      <button class="pp-sec-h" data-act="pp-sec" data-sec="${id}" aria-expanded="${open}"><span class="ms">${icon}</span><span class="t">${title}</span><span class="ms chev">keyboard_arrow_down</span></button>
+      ${open ? `<div class="pp-rows">${rows}</div>` : ''}
     </div>`;
+  }
+  function recordRows(c, item) {
+    const party = item.as === 'party';
+    const noun = party ? 'Party' : 'Client';
+    const rows = ppRow(`${noun} ref`, c.ref) + ppRow(`${noun} type`, isPerson(c) ? 'Person' : 'Organisation');
+    if (party) return rows + ppRow('Relation to matter', item.rel) + ppRow('Created', createdDate(c));
+    return rows + ppRow('Sensitive', 'No') + ppRow('Created', createdDate(c)) + ppRow('Additional information', '');
+  }
+  function personDetails(c, item) {
+    const party = item.as === 'party';
+    if (!isPerson(c)) {
+      return ppSection('company', 'domain', 'Company details', ppRow('Company name', c.company) + ppRow('Company number', c.number || '') + ppRow('Incorporated', '') + ppRow('Nature of business', ''))
+        + ppSection('contact', 'mail', 'Contact details', ppRow('Phone', c.phone) + ppRow('Email', c.email) + ppRow('Registered office', c.address))
+        + ppSection('record', 'contact_page', party ? 'Party record' : 'Client record', recordRows(c, item));
+    }
+    const co = companyOf(c);
+    return ppSection('personal', 'account_circle', 'Personal details', ppRow('Salutation', `${c.title} ${c.last}`) + ppRow('Title', c.title) + ppRow('Forename', c.first) + ppRow('Middle name', c.middle) + ppRow('Surname', c.last)
+        + (co ? ppRow('Company', co.company) : '') + ppRow('Date of birth', c.dob || '') + ppRow('NI number', ''))
+      + ppSection('contact', 'mail', 'Contact details', ppRow('Mobile', c.phone) + ppRow('Email', c.email) + ppRow('Postal address', c.address))
+      + ppSection('record', 'contact_page', party ? 'Party record' : 'Client record', recordRows(c, item));
+  }
+  function ppItemHtml(item, open, page) {
+    const c = C(item.key);
+    const label = (isPerson(c) ? listName(c) : c.company) + (item.primary ? ' (Primary)' : '');
+    const sub = !isPerson(c) ? (() => { const n = linkedPeople(item.key).length; return `<span class="sub">${n ? `${n} associated ${n === 1 ? 'person' : 'people'}` : 'No associated person(s)'}</span>`; })() : '';
+    const chev = page ? '' : `<span class="pp-go" data-act="pp-open" data-key="${item.key}" title="Open ${esc(isPerson(c) ? fullName(c) : c.company)}’s page"><span class="ms">chevron_right</span></span>`;
+    return `<div class="pp-item ${open ? 'open' : ''} ${ui.flash.has(item.key) ? 'flash' : ''}">
+      <div class="pp-head" ${page ? '' : `data-act="pp-select" data-key="${item.key}"`} role="button" tabindex="0" aria-expanded="${open}">
+        ${statusIcon(c)}<span class="nm">${esc(label)}</span>${sub}${chev}
+      </div>
+      ${open ? `<div class="pp-body">${personDetails(c, item)}</div>` : ''}
+    </div>`;
+  }
+
+  /* ---- the ID banner ---- */
+  function bannerFor(key, item) {
+    const c = C(key);
+    /* companies aren't ID checked: no banner. Their associated people carry the status. */
+    if (!isPerson(c)) return '';
+    const p = c;
+    const prefix = '';
+    const who = item.as === 'party' ? 'party' : 'client';
+    const k = p.status.id;
+    const rv = reviewOf(p.key);
+    const B = {
+      notchecked: ['info', 'info', `The ${who} has not yet been verified`, item.as === 'party' ? 'Verification is needed because of the relationship the party has with the client.' : 'Verification is needed to ensure your matter meets compliance standards.', 'Invite to verify', 'bn-invite'],
+      invited: ['info', 'info', `Waiting for the ${who} to verify their ID`, `An invitation to verify ID was sent to ${p.email || 'them'} on ${dmy(p.status.date)}.`, 'Resend invite', 'bn-resend'],
+      progress: ['info', 'info', 'Upload in progress', `The ${who} has started their ID check but hasn’t finished uploading yet.`, '', ''],
+      review: ['warn', 'warning', 'Verification of ID pending review', 'ID and Proof of address have been uploaded, please review the report.', 'Review ID', 'bn-review'],
+      failed: ['err', 'cancel', 'ID check failed', `Stop working on the matter or contact the ${who} to verify their identity.`, 'View Decision', 'bn-view'],
+      verified: ['ok', 'check_circle', 'ID verified', rv && rv.decision ? `Approved by ${rv.decision.by} on ${dmy(rv.decision.at)}` : `Verified on ${dmy(p.status.date)}`, 'View Decision', 'bn-view'],
+      expired: ['info', 'info', 'Previous verifications have expired', `The ${who} needs a new ID check before any future work starts.`, 'Invite to Verify ID', 'bn-invite'],
+    }[k];
+    if (!B) return '';
+    const [tone, icon, title, body, link, act] = B;
+    const canAct = act !== 'bn-invite' || invitable(p.key);
+    return `<div class="bn ${tone}" role="status">
+      <span class="ms fill">${icon}</span>
+      <div class="bn-t"><b>${esc(title)}</b><span>${esc(prefix + body)}</span></div>
+      ${link && canAct ? `<a class="bn-a" data-act="${act}" data-key="${p.key}" data-rel="${esc(item.as === 'party' ? item.rel || '' : '')}">${link}</a>` : ''}
+    </div>`;
+  }
+
+  /* ---- the cards on the right ---- */
+  function card(id, icon, title, count, inner, extra) {
+    const open = !ui.pp.cards.has(id);
+    return `<section class="pc ${open ? 'open' : ''}">
+      <button class="pc-h" data-act="pp-card" data-card="${id}" aria-expanded="${open}"><span class="ms">${icon}</span><b>${esc(title)}</b>${count != null ? `<span class="n">${count}</span>` : ''}<span class="ms chev">keyboard_arrow_up</span></button>
+      ${open ? `<div class="pc-b">${inner}</div>${extra || ''}` : ''}
+    </section>`;
+  }
+  function pcTable(head, rows, emptyMsg) {
+    const n = rows.length;
+    return `<div class="pt-wrap"><table class="pt"><thead><tr>${head.map((h) => `<th${h === 'Action' ? ' class="a"' : ''}>${h}</th>`).join('')}</tr></thead>
+      <tbody>${n ? rows.join('') : `<tr class="empty"><td colspan="${head.length}">${emptyMsg}</td></tr>`}</tbody></table>
+      <div class="pt-pg"><span class="ms sm off">first_page</span><span class="ms sm off">chevron_left</span><span class="pgn">1</span><span class="ms sm off">chevron_right</span><span class="ms sm off">last_page</span>
+        <span class="per">4<span class="ms sm">arrow_drop_down</span></span><span>Items per page</span><span class="tot">1 of 1 pages (${n} item${n === 1 ? '' : 's'})</span></div></div>`;
+  }
+  const dots = (act, attrs) => `<td class="a"><button class="icon-btn" data-act="${act}" ${attrs} aria-label="Actions"><span class="ms">more_vert</span></button></td>`;
+  function rightColumn(key, item) {
+    const c = C(key);
+    const asClient = item.as !== 'party';
+    const out = [bannerFor(key, item)];
+    if (!isPerson(c)) {
+      const ppl = linkedPeople(key);
+      out.push(card('assoc', 'contact_page', `${possessive(c)} Associated people`, ppl.length, pcTable(['Name', 'Position', 'Email', 'ID status', 'Action'],
+        ppl.map((p, i) => `<tr><td><a data-act="pp-open" data-key="${p.key}">${esc(listName(p))}</a></td><td>${i === 0 ? 'Director, PSC' : 'Director'}</td><td>${esc(p.email) || '<span class="ns">Not specified</span>'}</td><td>${stChip(p)}</td>${dots('assoc-menu', `data-key="${p.key}"`)}</tr>`), 'No associated person(s)')));
+    }
+    const docs = docsFor(key, asClient);
+    out.push(card('docs', 'description', `${possessive(c)} Documents`, docs.length, pcTable(['Name', 'Uploaded', 'Uploaded by', 'Action'],
+      docs.map((d) => `<tr><td>${esc(d.name)}</td><td>${esc(d.on)}</td><td>${esc(d.by)}</td>${dots('doc-menu', `data-name="${esc(d.name)}"`)}</tr>`), 'No documents yet')));
+    const rm = relatedMatters(key);
+    const open = rm.filter((x) => x.m.status !== 'Closed').length;
+    out.push(card('matters', 'work', `${possessive(c)} Related Matters`, `${rm.length} · ${open} open`, pcTable(['Matter Ref', 'Description', 'As', 'Status', 'Action'],
+      rm.map((x) => `<tr><td><a data-act="rm-open" data-id="${x.m.id}" data-tab="${x.tab}" data-key="${key}">${esc(x.m.ref)}</a></td><td>${esc(x.m.description)}</td><td>${esc(x.as)}</td><td>${pill(x.m.status)}</td>${dots('rm-menu', `data-id="${x.m.id}" data-tab="${x.tab}" data-key="${key}"`)}</tr>`), 'Not on any matters')));
+    if (asClient) {
+      const total = BILLS.reduce((s, b) => s + b[2], 0);
+      out.push(card('bills', 'receipt_long', `${possessive(c)} Recent Bills`, `${BILLS.length} issued in total`,
+        `<div class="pc-tiles"><div><span>Total billed</span><b>${money(total)}</b></div><div><span>Total left to pay</span><b>${money(175.21)}</b></div></div>`
+        + pcTable(['Bill No.', 'Due', 'Total', 'Status', 'Action'], BILLS.map((b) => `<tr><td>${b[0]}</td><td>${b[1]}</td><td>${money(b[2])}</td><td><span class="ml-pill" data-status="Paid">Paid</span></td>${dots('na', '')}</tr>`), ''),
+        '<div class="pc-more"><a data-act="na">View all in the Matter Financials tab</a></div>'));
+    }
+    return out.join('');
+  }
+  function stChip(p) {
+    const k = p.status.id;
+    const tone = { verified: 'ok', failed: 'err', review: 'warn', progress: 'warn', invited: 'info', expired: 'neutral', notchecked: 'neutral' }[k];
+    return `<span class="chip-st ${tone}"><i></i>${esc(k === 'review' ? 'Pending review' : STATUS[k].short)}</span>`;
+  }
+
+  /* ---- matter Clients / Parties tabs ---- */
+  /* "Add Client" / "Add Party" text button under the list (Halo DS v2 Button - text, Figma 8607:835716) */
+  function addBtn(m, tab) {
+    const party = tab === 'parties';
+    return `<button class="btn text pp-add" data-act="add-person" data-id="${m.id}"><span class="ms sm">add</span>${party ? 'Add Party' : 'Add Client'}</button>`;
+  }
+  function tabItems(m, tab) {
+    if (tab === 'parties') return m.parties.map(([k, rel]) => ({ key: k, rel, as: 'party' }));
+    return m.clients.map((k, i) => ({ key: k, rel: i === 0 ? 'Client (Primary)' : 'Client', as: 'client', primary: i === 0 && m.clients.length > 1 }));
+  }
+  function peopleTabHtml(m, tab) {
+    const items = tabItems(m, tab);
+    if (!items.length) return `<div class="pp-empty"><span class="ms">group_off</span>No ${tab} on this matter yet.${addBtn(m, tab)}</div>`;
+    const scope = `${m.id}:${tab}`;
+    let sel = ppKey(scope);
+    if (!items.some((x) => x.key === sel)) sel = ui.pp.sel[scope] = items[0].key;
+    const item = items.find((x) => x.key === sel);
+    return `<div class="pp">
+      <div class="pp-list">${items.map((x) => ppItemHtml(x, x.key === sel, false)).join('')}${addBtn(m, tab)}</div>
+      <div class="pp-right">${rightColumn(sel, item)}</div>
+    </div>`;
+  }
+
+  /* ---- a person's own page (from the Directory) ---- */
+  function personItem(key) {
+    const roles = rolesOf(key);
+    const rels = [];
+    db.matters.forEach((m) => m.parties.forEach(([k, rel]) => { if (k === key) rels.push(`${rel} (${m.ref})`); }));
+    const asClient = roles.includes('Client') || !roles.includes('Party');
+    return { key, as: asClient ? 'client' : 'party', rel: rels.join(', ') };
+  }
+  function personPageHtml(key) {
+    const c = C(key);
+    const item = personItem(key);
+    const roles = rolesOf(key);
+    const head = isPerson(c)
+      ? `<div class="ccol"><div class="row">${stLine(c, false)}</div>${contactRows(c)}</div>`
+      : companyColumn(c, false);
+    return `<div class="person-page">
+      <div class="mh person-h">
+        <button class="back" data-act="back" aria-label="Back"><span class="ms">chevron_left</span></button>
+        <div class="ref"><span class="num">${esc(c.ref)}</span></div>
+        <div class="body">
+          <div class="title">${esc(fullName(c))}</div>
+          <div class="clients">${head}</div>
+          <div class="meta"><div>Type: ${isPerson(c) ? 'Person' : 'Company'}</div><div>${roles.length ? roles.join(' · ') : 'No role yet'}</div></div>
+        </div>
+        <div class="right"><button class="icon-btn" data-act="person-menu" data-key="${key}" aria-label="More actions"><span class="ms">more_vert</span></button></div>
+      </div>
+      <div class="pp">
+        <div class="pp-list">${ppItemHtml(Object.assign({}, item, { primary: false }), true, true)}</div>
+        <div class="pp-right">${rightColumn(key, item)}</div>
+      </div>
+    </div>`;
+  }
+
+  /* ================================================================ ID verification panel (36685)
+     Review mode: Halo's summary, the documents, notes, Reject / Approve.
+     View mode (after a decision): read only, with the consultant's decision and notes. */
+  const DOCS = [
+    { label: 'ID', file: 'Entrust_passport_upload.jpg', img: 'assets/id/passport.png', wide: true },
+    { label: 'Selfie', file: 'Selfie_capture_2611.jpg', img: 'assets/id/selfie.png' },
+    { label: 'Address', file: 'Council_tax_bill_2026.pdf', img: 'assets/id/address.png' },
+    { label: 'Report', file: 'Setfords_App_check_report_IDM-2611-4471.pdf', img: 'assets/id/report.png' },
+  ];
+  function openReview(key, mode) {
+    ui.menu = null; ui.popover = null;
+    ui.review = { key, mode, doc: 0, notes: '', err: '', pip: false, anim: true };
+    render();
+  }
+  function rvPill(kind) {
+    const map = { clear: ['ok', 'Clear'], review: ['warn', 'Needs Review'], reviewed: ['warn', 'Needed Review'], suspicious: ['err', 'Suspicious'], approved: ['ok', 'Approved'], rejected: ['err', 'Rejected'] };
+    const [tone, label] = map[kind];
+    return `<span class="chip-st ${tone}"><i></i>${label}</span>`;
+  }
+  function reviewHtml() {
+    const R = ui.review;
+    const c = C(R.key);
+    const rv = reviewOf(R.key);
+    if (!rv) return '';
+    const view = R.mode === 'view';
+    const anim = R.anim ? 'anim' : '';
+    R.anim = false;
+    const n = issueCount(rv);
+    const area = (label, list) => `<div class="rv-area"><div class="rv-ah"><b>${label}</b>${rvPill(list.length ? (view ? 'reviewed' : 'review') : 'clear')}</div>${list.length ? `<ul>${list.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}</div>`;
+    const lead = view
+      ? (n === 0 ? 'Halo found 0 issues that needed your review.' : `Halo found ${n} issue${n > 1 ? 's' : ''} that needed your review. The item${n > 1 ? 's' : ''} to check ${n > 1 ? 'were' : 'was'} shown as follows.`)
+      : (n === 0 ? 'Halo found 0 issues that need your review but please double check anything before approving.' : `Halo found ${n} issue${n > 1 ? 's' : ''} that need${n > 1 ? '' : 's'} your review. The item${n > 1 ? 's' : ''} to check ${n > 1 ? 'are' : 'is'} shown below.`);
+    const d = rv.decision;
+    const doc = DOCS[R.doc];
+    const left = `<h3>${esc(possessive(c))} Summary</h3>
+      <p class="rv-overall">Halo rated the check overall as ${rvPill(n ? 'suspicious' : 'clear')}</p>
+      <p class="rv-lead">${lead}</p>
+      <div class="rv-box">${area('ID Document Checks', rv.issues.id)}${area('Proof of address checks', rv.issues.addr)}${area('AML Checks', rv.issues.aml)}</div>
+      ${view && d ? `<div class="rv-box rv-dec"><div class="rv-ah"><b>Consultant Reviewed as</b>${rvPill(d.outcome)}</div></div>
+        <h4>Notes</h4><p class="rv-notes">${d.notes ? esc(d.notes) : '<span class="ns">No notes were added</span>'}</p>` : ''}`;
+    const right = `<h3>Documents for review</h3>
+      <div class="rv-prev ${doc.wide ? '' : 'tall'}"><img src="${doc.img}" alt="${esc(doc.label)} document"><button class="rv-exp" data-act="rv-pip" aria-label="Open document preview"><span class="ms">open_in_full</span></button></div>
+      <div class="rv-thumbs">${DOCS.map((x, i) => `<button class="rv-th ${i === R.doc ? 'on' : ''}" data-act="rv-doc" data-i="${i}"><span>${x.label}</span><i><img src="${x.img}" alt=""></i></button>`).join('')}</div>
+      <div class="rv-dl"><a data-act="rv-download">Download all documents</a></div>`;
+    const notes = view ? '' : `<label class="rv-notes-f ${R.err ? 'bad' : ''}"><span>Notes</span><textarea id="rv-notes" placeholder="e.g. Checked utility bill against bank statement">${esc(R.notes)}</textarea>${R.err ? `<em>${esc(R.err)}</em>` : ''}</label>`;
+    const who = d && d.by === ME ? 'Your' : d ? `${d.by}’s` : 'Your';
+    const foot = view
+      ? `<span class="info">${who} decision was logged against the ${isClientAnywhere(R.key) ? 'client' : 'party'} record ${esc(d ? d.at : '')}</span><button class="btn outline teal" data-act="rv-close">Close</button>`
+      : `<span class="info">Your decision is logged against the ${isClientAnywhere(R.key) ? 'client' : 'party'} record.</span><button class="btn outline danger" data-act="rv-reject">Reject</button><button class="btn filled" data-act="rv-approve">Approve</button>`;
+    const pip = R.pip ? (() => { const pa = R.pipAnim ? 'anim' : ''; R.pipAnim = false; return `<div class="pip ${pa}" role="dialog" aria-label="Document preview">${pvHtml(c, R.doc)}</div>`; })() : '';
+    return `<div class="sheet-scrim ${anim}" data-act="rv-scrim"></div>${pip}
+      <aside class="sheet ${anim}" role="dialog" aria-label="ID verification">
+        <div class="sheet-h"><h2>ID verification</h2><p>Documents submitted by the ${isClientAnywhere(R.key) ? 'client' : 'party'} ${esc(rv.submitted)}</p><button class="icon-btn teal x" data-act="rv-close" aria-label="Close"><span class="ms">close</span></button></div>
+        <div class="sheet-b" id="rv-b"><div class="rv-cols"><div>${left}</div><div>${right}</div></div>${notes}</div>
+        <div class="sheet-f">${foot}</div>
+      </aside>`;
+  }
+  /* ---- document viewer: a real picture-in-picture window where the browser supports it
+     (Document Picture-in-Picture, Chrome/Edge 116+), otherwise a floating panel in the page.
+     Scroll left/right between documents, or pick one from the panel's gallery; both stay in sync. */
+  let pipWin = null;
+  const absUrl = (u) => new URL(u, location.href).href;
+  function pvHtml(c, i) {
+    const d = DOCS[i];
+    return `<div class="pv">
+      <div class="pip-h"><span class="ms sm">info</span><b>File</b><span class="path" data-pv-path>Halo/Documents/${esc(c.ref)}/ID check/${esc(d.file)}</span><button class="icon-btn" data-pv="close" aria-label="Close preview"><span class="ms sm">close</span></button></div>
+      <div class="pip-n" data-pv-name>${esc(d.file)}</div>
+      <div class="pv-track" data-pv-track>${DOCS.map((x) => `<div class="pv-slide"><img src="${absUrl(x.img)}" alt="${esc(x.label)} document" draggable="false"></div>`).join('')}</div>
+      <div class="pv-dots">${DOCS.map((x, j) => `<button class="${j === i ? 'on' : ''}" data-pv="go" data-i="${j}" aria-label="Show ${esc(x.label)}"></button>`).join('')}</div>
+      <div class="pip-f"><button class="sq" data-pv="step" data-d="-1" ${i === 0 ? 'disabled' : ''} aria-label="Previous document"><span class="ms">chevron_left</span></button><button class="sq" data-pv="step" data-d="1" ${i === DOCS.length - 1 ? 'disabled' : ''} aria-label="Next document"><span class="ms">chevron_right</span></button><span data-pv-count>Document ${i + 1} of ${DOCS.length}</span><button class="btn filled sm" data-pv="open">Open</button></div>
+    </div>`;
+  }
+  /* point a viewer (in this page or the PiP window) at document i */
+  function pvShow(root, i, smooth) {
+    if (!root || !ui.review) return;
+    const c = C(ui.review.key), d = DOCS[i];
+    const track = root.querySelector('[data-pv-track]');
+    if (track) { const x = i * track.clientWidth; if (Math.abs(track.scrollLeft - x) > 2) { track._pvLock = true; track.scrollTo({ left: x, behavior: smooth ? 'smooth' : 'auto' }); clearTimeout(track._pvT); track._pvT = setTimeout(() => { track._pvLock = false; }, smooth ? 600 : 50); } }
+    const set = (sel, v) => { const el = root.querySelector(sel); if (el) el.textContent = v; };
+    set('[data-pv-name]', d.file); set('[data-pv-count]', `Document ${i + 1} of ${DOCS.length}`); set('[data-pv-path]', `Halo/Documents/${c.ref}/ID check/${d.file}`);
+    root.querySelectorAll('[data-pv="go"]').forEach((b, j) => b.classList.toggle('on', j === i));
+    const [prev, next] = root.querySelectorAll('[data-pv="step"]');
+    if (prev) prev.disabled = i === 0; if (next) next.disabled = i === DOCS.length - 1;
+  }
+  function pvBind(root) {
+    const track = root.querySelector('[data-pv-track]');
+    if (!track || track._pvBound) return;
+    track._pvBound = true;
+    track.addEventListener('scroll', () => {
+      clearTimeout(track._pvS);
+      track._pvS = setTimeout(() => {
+        if (track._pvLock || !ui.review) return;
+        const i = Math.max(0, Math.min(DOCS.length - 1, Math.round(track.scrollLeft / track.clientWidth)));
+        if (i !== ui.review.doc) setDoc(i, 'scroll');
+      }, 120);
+    });
+    /* trackpads scroll sideways already; turn a mouse wheel's up/down into left/right too */
+    track.addEventListener('wheel', (e) => { if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) { e.preventDefault(); track.scrollLeft += e.deltaY; } }, { passive: false });
+  }
+  function setDoc(i, from) {
+    if (!ui.review) return;
+    ui.review.doc = i;
+    render(); /* side panel preview + gallery; the in-page viewer is rebuilt and re-pointed in render() */
+    if (pipWin) pvShow(pipWin.document, i, from !== 'scroll');
+  }
+  function pvAction(btn) {
+    const a = btn.dataset.pv, R = ui.review;
+    if (!R) return;
+    if (a === 'close') { if (pipWin) closePip(); else { R.pip = false; render(); } }
+    else if (a === 'step') setDoc(Math.max(0, Math.min(DOCS.length - 1, R.doc + +btn.dataset.d)), 'btn');
+    else if (a === 'go') setDoc(+btn.dataset.i, 'btn');
+    else if (a === 'open') toast(`Would open ${DOCS[R.doc].file}`);
+  }
+  async function openPip() {
+    const R = ui.review;
+    if (pipWin) { pipWin.focus(); return; }
+    if (!('documentPictureInPicture' in window)) { R.pip = true; R.pipAnim = true; render(); return; }
+    try {
+      const w = await window.documentPictureInPicture.requestWindow({ width: 480, height: 700 });
+      pipWin = w;
+      document.querySelectorAll('link[rel="stylesheet"]').forEach((l) => { const n = w.document.createElement('link'); n.rel = 'stylesheet'; n.href = l.href; w.document.head.appendChild(n); });
+      w.document.title = 'ID documents';
+      w.document.body.className = 'pv-win';
+      w.document.body.innerHTML = pvHtml(C(R.key), R.doc);
+      w.document.addEventListener('click', (e) => { const b = e.target instanceof w.Element ? e.target.closest('[data-pv]') : null; if (b) pvAction(b); });
+      w.document.addEventListener('keydown', (e) => { if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') setDoc(Math.max(0, Math.min(DOCS.length - 1, ui.review.doc + (e.key === 'ArrowRight' ? 1 : -1))), 'btn'); });
+      w.addEventListener('pagehide', () => { pipWin = null; if (ui.review) render(); });
+      pvBind(w.document);
+      requestAnimationFrame(() => pvShow(w.document, R.doc, false));
+      w.addEventListener('resize', () => { if (ui.review) pvShow(w.document, ui.review.doc, false); });
+      render();
+    } catch (err) { R.pip = true; R.pipAnim = true; render(); }
+  }
+  function closePip() { if (pipWin) { const w = pipWin; pipWin = null; w.close(); } }
+  function mountInlinePip() {
+    const el = document.querySelector('#layer .pip');
+    if (!el || !ui.review) return;
+    pvBind(el);
+    pvShow(el, ui.review.doc, false);
+  }
+  const isClientAnywhere = (key) => rolesOf(key).includes('Client');
+  function decide(outcome) {
+    const R = ui.review;
+    const el = document.getElementById('rv-notes');
+    if (el) R.notes = el.value;
+    if (outcome === 'rejected' && !R.notes.trim()) { R.err = 'Add a note to say why you’re rejecting this check.'; render(); { const t = document.getElementById('rv-notes'); if (t) t.focus(); } return; }
+    const c = C(R.key);
+    const rv = reviewOf(R.key);
+    const rec = db.reviews[R.key] || (db.reviews[R.key] = { submitted: rv.submitted, issues: rv.issues });
+    rec.decision = { outcome, by: ME, at: nowStamp(), notes: R.notes.trim() };
+    if (outcome === 'approved') c.status = { id: 'verified', addr: 'verified', aml: 'verified', date: TODAY };
+    else c.status = { id: 'failed', addr: rv.issues.addr.length ? 'failed' : 'verified', aml: rv.issues.aml.length ? 'failed' : 'verified', date: TODAY };
+    ui.review = null;
+    closePip();
+    flash(R.key);
+    save();
+    snack(outcome === 'approved' ? `${fullName(c)}’s ID check has been approved` : `${fullName(c)}’s ID check has been rejected`);
+    render();
   }
 
   function summaryHtml(m) {
     return `<div class="tab-body grey"><div class="cards">
       <div>
-        <div class="card"><h3>Balances</h3><div class="kv"><span>Client balance</span><b>£1500.00</b></div><div class="kv"><span>Deposit balance</span><b>£8000.00</b></div><div class="kv"><span>Office balance</span><b>£50.00</b></div></div>
-        <div class="card"><h3>Quotes</h3><div class="kv" style="border:0"><b>Cost Quote</b><b>£2500.00</b></div><div style="text-align:right;color:#D10000;font-size:13px">211.04%</div><div class="bar"><i style="width:100%;background:#E3000F"></i></div>
-          <div class="kv" style="border:0"><span>Disbursement Quote</span><b>£300.00</b></div><div style="text-align:right;color:#16A34A;font-size:13px">48%</div><div class="bar"><i style="width:48%;background:#16A34A"></i></div></div>
+        <div class="card"><h3>Balances</h3><div class="kv"><span>Client balance</span><b>${cur()}1500.00</b></div><div class="kv"><span>Deposit balance</span><b>${cur()}8000.00</b></div><div class="kv"><span>Office balance</span><b>${cur()}50.00</b></div></div>
+        <div class="card"><h3>Quotes</h3><div class="kv" style="border:0"><b>Cost Quote</b><b>${cur()}2500.00</b></div><div style="text-align:right;color:#D10000;font-size:13px">211.04%</div><div class="bar"><i style="width:100%;background:#E3000F"></i></div>
+          <div class="kv" style="border:0"><span>Disbursement Quote</span><b>${cur()}300.00</b></div><div style="text-align:right;color:#16A34A;font-size:13px">48%</div><div class="bar"><i style="width:48%;background:#16A34A"></i></div></div>
       </div>
       <div>
         <div class="card"><h3>Important Notes <span class="ms" style="color:var(--link)">add_circle</span></h3>
@@ -722,13 +1122,18 @@
     render();
   }
   function inviteFromMatter(m) {
-    const clients = [];
+    /* everyone on the matter who can be ID checked: person clients and parties, plus the
+       associated people of any company client or company party. Each person appears once. */
+    const seen = new Set();
+    const add = (list, key, rel) => { if (seen.has(key) || !invitable(key)) return; seen.add(key); list.push(rowFrom(key, rel, defaultTick(C(key)))); };
+    const clients = [], parties = [];
     m.clients.forEach((k) => {
       const c = C(k);
-      if (isPerson(c)) clients.push(rowFrom(k, '', defaultTick(c)));
-      else linkedPeople(k).forEach((p) => clients.push(rowFrom(p.key, `Contact for ${c.company}`, defaultTick(p))));
+      if (isPerson(c)) add(clients, k, '');
+      else linkedPeople(k).forEach((p) => add(clients, p.key, `Contact for ${c.company}`));
     });
-    const parties = m.parties.filter(([k]) => invitable(k)).map(([k, rel]) => rowFrom(k, rel, defaultTick(C(k))));
+    m.parties.forEach(([k, rel]) => { if (isPerson(C(k))) add(parties, k, rel); });
+    m.parties.forEach(([k, rel]) => { const c = C(k); if (!isPerson(c)) linkedPeople(k).forEach((p) => add(parties, p.key, `${rel} · ${c.company}`)); });
     openInvite({
       origin: 'matter', matterId: m.id, allowAdd: true,
       subtitle: "Check who should be asked to verify their ID and the contact details we'll send an invite to. People with a verified ID aren't selected.",
@@ -741,14 +1146,6 @@
       origin: 'directory',
       subtitle: "Check who should be asked to verify their ID and the contact details we'll send an invite to.",
       groups: [{ label: 'Clients', rows: rows.filter((r) => r.roles.includes('Client')) }, { label: 'Parties', rows: rows.filter((r) => !r.roles.includes('Client')) }],
-    });
-  }
-  function inviteFromTab(m, tab, keys) {
-    const rels = Object.fromEntries(tabRows(m, tab).map((r) => [r.key, r.rel]));
-    openInvite({
-      origin: 'tab', matterId: m.id, checkboxes: false, unit: tab === 'parties' ? 'parties' : 'clients',
-      subtitle: "Check the contact details we'll send the ID check invite to. Use the pencil to change them.",
-      groups: [{ label: '', rows: keys.map((k) => rowFrom(k, rels[k] || '', true)) }],
     });
   }
   function inviteSingle(key, rel) {
@@ -941,7 +1338,7 @@
     const focusId = active && active.id && /^(dir-q|tab-q|ml-q|fly-q)$/.test(active.id) ? active.id : null;
     const caret = focusId ? active.selectionStart : 0;
     const scrolls = {};
-    ['dir-scroll', 'tab-scroll', 'dlg-b', 'mcol', 'ml-scroll', 'mt-strip', 'fly-list'].forEach((id) => { const el = document.getElementById(id); if (el) scrolls[id] = [el.scrollLeft, el.scrollTop]; });
+    ['dir-scroll', 'tab-scroll', 'dlg-b', 'rv-b', 'mcol', 'ml-scroll', 'mt-strip', 'fly-list'].forEach((id) => { const el = document.getElementById(id); if (el) scrolls[id] = [el.scrollLeft, el.scrollTop]; });
     const mainTop = main.scrollTop;
 
     $('#sidenav').innerHTML = sidenavHtml(r);
@@ -949,6 +1346,8 @@
     if (r.name === 'matter') html = matterHtml(matterById(r.id), r.tab);
     else if (r.name === 'matters') html = mattersHtml();
     else if (r.name === 'directory') html = directoryHtml();
+    else if (r.name === 'settings') html = settingsHtml();
+    else if (r.name === 'person') html = personPageHtml(r.id);
     else html = dashboardHtml();
     main.innerHTML = html;
     main.className = r.name === 'matter' || r.name === 'matters' ? 'shelled' : '';
@@ -962,13 +1361,15 @@
     if (ui.flyout) layer += flyoutHtml();
     if (ui.fpop) layer += fpopHtml();
     if (ui.menu) layer += menuHtml();
+    if (ui.review) layer += reviewHtml();
     if (ui.modal) layer += modalHtml();
     if (ui.snack) layer += `<div class="snack" role="status"><span class="msg">${esc(ui.snack)}</span><button class="icon-btn" data-act="snack-close" style="color:#fff" aria-label="Dismiss"><span class="ms">close</span></button></div>`;
     if (ui.toast) layer += `<div class="toast">${esc(ui.toast)}</div>`;
     $('#layer').innerHTML = layer;
+    if (ui.review && ui.review.pip) mountInlinePip();
 
     if (resetScroll) main.scrollTop = 0; else main.scrollTop = mainTop;
-    Object.entries(scrolls).forEach(([id, [l, t]]) => { const el = document.getElementById(id); if (el && !(resetScroll && !['dlg-b', 'mt-strip', 'fly-list'].includes(id))) { el.scrollLeft = l; el.scrollTop = t; } });
+    Object.entries(scrolls).forEach(([id, [l, t]]) => { const el = document.getElementById(id); if (el && !(resetScroll && !['dlg-b', 'rv-b', 'mt-strip', 'fly-list'].includes(id))) { el.scrollLeft = l; el.scrollTop = t; } });
     if (resetScroll) { const strip = document.getElementById('mt-strip'), act = strip && strip.querySelector('.mt-tab--active'); if (act) { const L = act.offsetLeft, R = L + act.offsetWidth; if (L < strip.scrollLeft + 8) strip.scrollLeft = L - 8; else if (R > strip.scrollLeft + strip.clientWidth - 8) strip.scrollLeft = R - strip.clientWidth + 8; } }
     if (focusId) { const el = document.getElementById(focusId); if (el) { el.focus(); el.setSelectionRange(caret, caret); } }
     if (ui.modal && ui.modal.editing) { const el = document.getElementById('e-email'); if (el && document.activeElement !== el && !document.activeElement.id.startsWith('e-')) el.focus(); }
@@ -980,6 +1381,7 @@
     else if (e.target.id === 'tab-q') { ui.tab.q = e.target.value; render(); }
     else if (e.target.id === 'ml-q') { ui.ml.q = e.target.value; render(); }
     else if (e.target.id === 'fly-q') { ui.flyout.q = e.target.value; render(); }
+    else if (e.target.id === 'rv-notes' && ui.review) { ui.review.notes = e.target.value; if (ui.review.err && e.target.value.trim()) { ui.review.err = ''; const f = e.target.closest('.rv-notes-f'); if (f) { f.classList.remove('bad'); const em = f.querySelector('em'); if (em) em.remove(); } } }
     else if (e.target.dataset && e.target.dataset.fld) readDraftInputs();
   });
   document.addEventListener('change', (e) => {
@@ -991,10 +1393,13 @@
     if (e.key === 'Escape') {
       if (ui.menu || ui.popover || ui.flyout || ui.fpop) { ui.menu = null; ui.popover = null; ui.flyout = null; ui.fpop = null; render(); }
       else if (ui.modal && ui.modal.phase === 'idle') { ui.modal = null; render(); }
+      else if (ui.review) { if (ui.review.pip) ui.review.pip = false; else { ui.review = null; closePip(); } render(); }
     }
   });
 
   document.addEventListener('click', (e) => {
+    const pv = e.target instanceof Element ? e.target.closest('[data-pv]') : null;
+    if (pv) { pvAction(pv); return; }
     const t = e.target instanceof Element ? e.target.closest('[data-act]') : null;
     const insideLayer = e.target instanceof Element && e.target.closest('.menu, .mcp, .mt-flyout, .fpop');
     if (!t) {
@@ -1008,6 +1413,35 @@
     const d = t.dataset;
     switch (act) {
       case 'na': toast('Not part of this prototype'); break;
+      case 'nav-settings': go('#/settings'); break;
+      case 'set-currency': if ((db.currency || 'GBP') !== d.cur) { db.currency = d.cur; save(); render(); snack(`Currency changed to ${CURRENCIES[d.cur].label} (${CURRENCIES[d.cur].sym})`); } break;
+      /* people pages */
+      case 'pp-select': { const sc = `${r.id}:${r.tab}`; ui.pp.sel[sc] = d.key; render(); break; }
+      case 'pp-open': e.stopPropagation(); go(`#/person/${d.key}`); break;
+      case 'pp-sec': ui.pp.secs.has(d.sec) ? ui.pp.secs.delete(d.sec) : ui.pp.secs.add(d.sec); render(); break;
+      case 'pp-card': ui.pp.cards.has(d.card) ? ui.pp.cards.delete(d.card) : ui.pp.cards.add(d.card); render(); break;
+      case 'bn-invite': inviteSingle(d.key, d.rel); break;
+      case 'bn-resend': inviteSingle(d.key, d.rel); break;
+      case 'bn-review': openReview(d.key, 'review'); break;
+      case 'bn-view': openReview(d.key, 'view'); break;
+      case 'assoc-menu': { const k = d.key; openMenu(t, [{ label: 'View details', fn: () => go(`#/person/${k}`) }, { label: 'Invite to Verify ID', disabled: !invitable(k), fn: () => inviteSingle(k) }]); break; }
+      case 'doc-menu': openMenu(t, [{ label: 'Preview', fn: () => toast('Not part of this prototype') }, { label: 'Download', fn: () => toast('Not part of this prototype') }]); break;
+      case 'rm-open': flash(d.key); go(`#/matter/${d.id}/${d.tab}`); break;
+      case 'rm-menu': { const { id, tab, key } = d; openMenu(t, [{ label: 'Open matter', fn: () => { flash(key); go(`#/matter/${id}/${tab}`); } }, { label: 'View in new tab', fn: () => { if (!db.tabs.includes(id)) db.tabs.push(id); save(); toast(`${matterById(id).ref} added to your open matters`); } }]); break; }
+      case 'person-menu': {
+        const k = d.key; const ms = mattersOf(k);
+        const items = [{ label: 'Edit', fn: () => toast('Not part of this prototype') }, { label: 'Invite to Verify ID', disabled: !invitable(k), fn: () => inviteSingle(k) }, { label: 'Add Matter', fn: () => toast('Not part of this prototype') }];
+        if (ms.length) { items.push({ sep: true }, { heading: true, label: 'Open matter' }); ms.forEach((x) => items.push({ label: x.m.ref, sub: x.as, fn: () => { flash(k); go(`#/matter/${x.m.id}/${x.tab}`); } })); }
+        openMenu(t, items); break;
+      }
+      case 'to-person': go(`#/person/${d.key}`); break;
+      /* ID verification panel */
+      case 'rv-doc': setDoc(+d.i, 'gallery'); break;
+      case 'rv-pip': openPip(); break;
+      case 'rv-download': toast('Would download all 4 documents'); break;
+      case 'rv-scrim': case 'rv-close': ui.review = null; closePip(); render(); break;
+      case 'rv-approve': decide('approved'); break;
+      case 'rv-reject': decide('rejected'); break;
       case 'contact-link': e.preventDefault(); toast(d.kind === 'email' ? 'Would open a new email' : 'Would start a call'); break;
       case 'nav-matters': go('#/matters'); break;
       case 'nav-dashboard': go('#/dashboard'); break;
@@ -1036,18 +1470,9 @@
         all.forEach((k) => (allOn ? ui.dir.sel.delete(k) : ui.dir.sel.add(k)));
         render(); break;
       }
-      case 'tab-sel': ui.tab.sel.has(d.key) ? ui.tab.sel.delete(d.key) : ui.tab.sel.add(d.key); render(); break;
-      case 'tab-sel-all': {
-        const m = matterById(d.id);
-        const keys = tabRows(m, d.tab).map((x) => x.key);
-        const allOn = keys.every((k) => ui.tab.sel.has(k));
-        keys.forEach((k) => (allOn ? ui.tab.sel.delete(k) : ui.tab.sel.add(k)));
-        render(); break;
-      }
       case 'sel-clear': (d.scope === 'dir' ? ui.dir.sel : ui.tab.sel).clear(); render(); break;
       case 'invite-sel': {
-        if (d.scope === 'dir') inviteFromDirectory([...ui.dir.sel]);
-        else inviteFromTab(matterById(r.id), r.tab, [...ui.tab.sel]);
+        inviteFromDirectory([...ui.dir.sel]);
         break;
       }
       case 'to-directory': go(`#/directory?q=${encodeURIComponent(C(d.key).ref)}&hl=${d.key}`); break;
@@ -1057,6 +1482,7 @@
         if (d.scope === 'dir') {
           const ms = mattersOf(d.key);
           const items = [
+            { label: 'View details', fn: () => go(`#/person/${d.key}`) },
             { label: 'Edit', fn: () => toast('Not part of this prototype') },
             { label: 'Invite to Verify ID', disabled: !invitable(d.key), fn: () => inviteSingle(d.key) },
             { label: 'Add Matter', fn: () => toast('Not part of this prototype') },
@@ -1092,6 +1518,7 @@
         ui.popover = { id: d.id, rect: { left: rect.left - 16, bottom: rect.bottom } };
         render(); break;
       }
+      case 'add-person': toast('Not part of this prototype'); break;
       case 'add-party': inviteFromMatter(matterById(d.id)); md().newParties.push({ first: '', last: '', rel: '', email: '', mobile: '', ticked: true, err: {} }); render(); break;
 
       /* dialog */
@@ -1150,7 +1577,7 @@
 
       /* dashboard (20725) */
       case 'db-tab': ui.db = Object.assign(ui.db || {}, { [d.card]: d.tab }); render(); break;
-      case 'db-client': go(`#/directory?q=${encodeURIComponent(C(d.key).ref)}&hl=${d.key}`); break;
+      case 'db-client': go(`#/person/${d.key}`); break;
       case 'customise': toast('Customise Layout is demonstrated in the 20725 Dashboard prototype'); break;
       case 'advance': {
         const next = { invited: 'progress', progress: 'review', review: 'verified' };
